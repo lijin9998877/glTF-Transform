@@ -16,7 +16,7 @@ import {
 import type { MeshoptEncoder } from 'meshoptimizer';
 import { MeshoptFilter, MeshoptMode, type PreparedAccessor } from './constants.js';
 
-const { BYTE, SHORT, FLOAT } = Accessor.ComponentType;
+const { BYTE, UNSIGNED_BYTE, SHORT, UNSIGNED_SHORT, FLOAT } = Accessor.ComponentType;
 const { encodeNormalizedInt, decodeNormalizedInt } = MathUtils;
 
 /** Pre-processes array with required filters or padding. */
@@ -34,7 +34,15 @@ export function prepareAccessor(
 		normalized: accessor.getNormalized(),
 	};
 
-	if (mode !== MeshoptMode.ATTRIBUTES) return result;
+	if (mode !== MeshoptMode.ATTRIBUTES) {
+		// Meshopt TRIANGLES and INDICES modes support only 2- or 4-byte indices, but glTF also allows 1-byte indices.
+		if (result.componentType === UNSIGNED_BYTE) {
+			result.array = new Uint16Array(result.array);
+			result.byteStride = 2;
+			result.componentType = UNSIGNED_SHORT;
+		}
+		return result;
+	}
 
 	if (filter !== MeshoptFilter.NONE) {
 		let array = accessor.getNormalized() ? decodeNormalizedIntArray(accessor) : new Float32Array(result.array);

@@ -1,7 +1,7 @@
 import { deepEqual, ok, strictEqual } from 'node:assert/strict';
 import path from 'node:path';
 import { describe, test } from 'node:test';
-import { Document, Format, getBounds, NodeIO, Primitive } from '@gltf-transform/core';
+import { Accessor, Document, Format, getBounds, NodeIO, Primitive } from '@gltf-transform/core';
 import { EXTMeshoptCompression, KHRMeshQuantization } from '@gltf-transform/extensions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 
@@ -106,6 +106,36 @@ describe('extensions::EXTMeshoptCompression', () => {
 		strictEqual(rtMarker.getSparse(), true, '_SPARSE sparse (round trip)');
 		deepEqual(Array.from(rtPosition.getArray()), positionArray, 'POSITION array');
 		deepEqual(Array.from(rtMarker.getArray()), sparseArray, '_SPARSE array');
+	});
+
+	test('encoding uint8 indices', async () => {
+		const io = await createEncoderIO();
+
+		const doc = new Document();
+		doc.createExtension(EXTMeshoptCompression).setRequired(true);
+
+		const indicesArray = [0, 1, 2, 2, 1, 3];
+		const buffer = doc.createBuffer();
+		const position = doc
+			.createAccessor()
+			.setType('VEC3')
+			.setBuffer(buffer)
+			.setArray(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]));
+		const indices = doc.createAccessor().setBuffer(buffer).setArray(new Uint8Array(indicesArray));
+		const prim = doc.createPrimitive().setAttribute('POSITION', position).setIndices(indices);
+		doc.createMesh().addPrimitive(prim);
+
+		const { json, resources } = await io.writeJSON(doc, { format: Format.GLB });
+		const indicesDef = json.accessors[json.meshes[0].primitives[0].indices];
+
+		strictEqual(indicesDef.componentType, Accessor.ComponentType.UNSIGNED_SHORT, 'indices componentType');
+		strictEqual(json.bufferViews[indicesDef.bufferView].extensions.EXT_meshopt_compression.byteStride, 2, 'stride');
+
+		const rtDoc = await io.readJSON({ json, resources });
+		const rtIndices = rtDoc.getRoot().listMeshes()[0].listPrimitives()[0].getIndices();
+		deepEqual(Array.from(rtIndices.getArray()), indicesArray, 'indices array');
+		deepEqual(Array.from(indices.getArray()), indicesArray, 'source unchanged');
+		ok(indices.getArray() instanceof Uint8Array, 'source type unchanged');
 	});
 
 	test('encoding grouped buffer views', async () => {
