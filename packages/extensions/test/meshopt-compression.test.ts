@@ -1,8 +1,8 @@
 import { deepEqual, ok, strictEqual } from 'node:assert/strict';
 import path from 'node:path';
 import { describe, test } from 'node:test';
-import { Accessor, Document, Format, getBounds, NodeIO, Primitive } from '@gltf-transform/core';
-import { EXTMeshoptCompression, KHRMeshQuantization } from '@gltf-transform/extensions';
+import { Accessor, Document, Format, getBounds, type ILogger, NodeIO, Primitive } from '@gltf-transform/core';
+import { EXTMeshoptCompression, KHRMeshPrimitiveRestart, KHRMeshQuantization } from '@gltf-transform/extensions';
 import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 
 const INPUTS = ['BoxMeshopt.glb', 'BoxMeshopt.gltf'];
@@ -138,6 +138,74 @@ describe('extensions::EXTMeshoptCompression', () => {
 		ok(indices.getArray() instanceof Uint8Array, 'source type unchanged');
 	});
 
+	test('encoding uint8 indices with primitive restart', async () => {
+		const io = await createEncoderIO();
+
+		const doc = new Document();
+		doc.createExtension(EXTMeshoptCompression).setRequired(true);
+		doc.createExtension(KHRMeshPrimitiveRestart);
+
+		const buffer = doc.createBuffer();
+		const position = doc
+			.createAccessor()
+			.setType('VEC3')
+			.setBuffer(buffer)
+			.setArray(new Float32Array(6 * 3));
+		const indices = doc
+			.createAccessor()
+			.setBuffer(buffer)
+			.setArray(new Uint8Array([0, 1, 2, 0xff, 3, 4, 5]));
+		const prim = doc
+			.createPrimitive()
+			.setMode(Primitive.Mode.TRIANGLE_STRIP)
+			.setAttribute('POSITION', position)
+			.setIndices(indices);
+		doc.createMesh().addPrimitive(prim);
+
+		const rtDoc = await io.readBinary(await io.writeBinary(doc));
+		const rtIndices = rtDoc.getRoot().listMeshes()[0].listPrimitives()[0].getIndices();
+		deepEqual(Array.from(rtIndices.getArray()), [0, 1, 2, 0xffff, 3, 4, 5], 'restart value preserved');
+	});
+
+	test('encoding triangle indices with partial triangle', async () => {
+		const io = await createEncoderIO();
+		const warnings: string[] = [];
+
+		const logger: ILogger = {
+			debug: () => {},
+			info: () => {},
+			warn: (text) => {
+				warnings.push(text);
+			},
+			error: () => {},
+		};
+
+		const doc = new Document().setLogger(logger);
+		doc.createExtension(EXTMeshoptCompression).setRequired(true);
+
+		const indicesArray = [0, 1, 2, 3];
+		const buffer = doc.createBuffer();
+		const position = doc
+			.createAccessor()
+			.setType('VEC3')
+			.setBuffer(buffer)
+			.setArray(new Float32Array(4 * 3));
+		const indices = doc.createAccessor().setBuffer(buffer).setArray(new Uint16Array(indicesArray));
+		const prim = doc.createPrimitive().setAttribute('POSITION', position).setIndices(indices);
+		doc.createMesh('PartialMesh').addPrimitive(prim);
+
+		const { json, resources } = await io.writeJSON(doc, { format: Format.GLB });
+		const indicesDef = json.accessors[json.meshes[0].primitives[0].indices];
+		const rtDoc = await io.readJSON({ json, resources });
+		const rtIndices = rtDoc.getRoot().listMeshes()[0].listPrimitives()[0].getIndices();
+
+		strictEqual(json.bufferViews[indicesDef.bufferView].extensions.EXT_meshopt_compression.mode, 'INDICES', 'mode');
+		deepEqual(Array.from(rtIndices.getArray()), indicesArray, 'indices array');
+		strictEqual(warnings.length, 1, 'warns once');
+		ok(warnings[0].includes('"PartialMesh"'), 'warning names mesh');
+		ok(warnings[0].includes('not a multiple of 3'), 'warning explains cause');
+	});
+
 	test('encoding grouped buffer views', async () => {
 		const io = await createEncoderIO();
 
@@ -234,8 +302,10 @@ describe('extensions::EXTMeshoptCompression', () => {
 
 async function createEncoderIO(): Promise<NodeIO> {
 	await Promise.all([MeshoptDecoder.ready, MeshoptEncoder.ready]);
-	return new NodeIO().registerExtensions([EXTMeshoptCompression, KHRMeshQuantization]).registerDependencies({
-		'meshopt.decoder': MeshoptDecoder,
-		'meshopt.encoder': MeshoptEncoder,
-	});
+	return new NodeIO()
+		.registerExtensions([EXTMeshoptCompression, KHRMeshPrimitiveRestart, KHRMeshQuantization])
+		.registerDependencies({
+			'meshopt.decoder': MeshoptDecoder,
+			'meshopt.encoder': MeshoptEncoder,
+		});
 }

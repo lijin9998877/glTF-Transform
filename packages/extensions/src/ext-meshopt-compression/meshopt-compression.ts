@@ -12,9 +12,9 @@ import {
 } from '@gltf-transform/core';
 import type { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 import { EXT_MESHOPT_COMPRESSION } from '../constants.js';
-import { EncoderMethod, type MeshoptBufferViewExtension, MeshoptFilter } from './constants.js';
+import { EncoderMethod, type MeshoptBufferViewExtension, MeshoptFilter, MeshoptMode } from './constants.js';
 import { isFallbackBuffer } from './decoder.js';
-import { getMeshoptFilter, getMeshoptMode, getTargetPath, prepareAccessor } from './encoder.js';
+import { getMeshoptFilter, getMeshoptMode, getTargetPath, listMeshNames, prepareAccessor } from './encoder.js';
 
 interface EncoderOptions {
 	method?: EncoderMethod;
@@ -336,7 +336,21 @@ export class EXTMeshoptCompression extends Extension {
 
 			const usage = context.getAccessorUsage(accessor);
 			const parentID = context.accessorUsageGroupedByParent.has(usage) ? getParentID(accessor) : null;
-			const mode = getMeshoptMode(accessor, usage);
+			let mode = getMeshoptMode(accessor, usage);
+			// Meshopt TRIANGLES mode cannot encode a partial triangle; INDICES mode keeps the data as-is.
+			if (mode === MeshoptMode.TRIANGLES && accessor.getCount() % 3 !== 0) {
+				const meshNames = listMeshNames(accessor)
+					.map((name) => `"${name}"`)
+					.join(', ');
+				this.document
+					.getLogger()
+					.warn(
+						`[${EXT_MESHOPT_COMPRESSION}] Mesh ${meshNames}: triangle indices count (${accessor.getCount()}) ` +
+							'is not a multiple of 3, which is invalid glTF. Encoding with INDICES mode instead; ' +
+							'check the tool that exported this mesh.',
+					);
+				mode = MeshoptMode.INDICES;
+			}
 			const filter =
 				options.method === EncoderMethod.FILTER
 					? getMeshoptFilter(accessor, this.document)

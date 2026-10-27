@@ -36,8 +36,9 @@ export function prepareAccessor(
 
 	if (mode !== MeshoptMode.ATTRIBUTES) {
 		// Meshopt TRIANGLES and INDICES modes support only 2- or 4-byte indices, but glTF also allows 1-byte indices.
+		// glTF reserves the maximum index value for primitive restart, so 0xFF must become 0xFFFF, not 0x00FF.
 		if (result.componentType === UNSIGNED_BYTE) {
-			result.array = new Uint16Array(result.array);
+			result.array = Uint16Array.from(result.array, (index) => (index === 0xff ? 0xffff : index));
 			result.byteStride = 2;
 			result.componentType = UNSIGNED_SHORT;
 		}
@@ -154,6 +155,18 @@ export function getMeshoptMode(accessor: Accessor, usage: string): MeshoptMode {
 	}
 
 	return MeshoptMode.ATTRIBUTES;
+}
+
+/** Lists names of meshes using the accessor, so warnings can point users to the affected mesh. */
+export function listMeshNames(accessor: Accessor): string[] {
+	const names = new Set<string>();
+	for (const prim of accessor.listParents()) {
+		if (prim.propertyType !== PropertyType.PRIMITIVE) continue;
+		for (const mesh of prim.listParents()) {
+			if (mesh.propertyType === PropertyType.MESH) names.add(mesh.getName() || '(unnamed)');
+		}
+	}
+	return Array.from(names);
 }
 
 export function getMeshoptFilter(accessor: Accessor, doc: Document): { filter: MeshoptFilter; bits?: number } {
